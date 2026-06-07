@@ -18,7 +18,7 @@ import sys
 import anyio
 from dotenv import load_dotenv
 
-from research_agent.orchestrator import Pipeline, run_research
+from research_agent.orchestrator import Pipeline, ProgressFn, run_research
 from research_agent.store import ProvenanceStore
 
 
@@ -43,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="Research Report",
         help="title for the rendered report",
     )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="suppress stage progress output on stderr",
+    )
     return parser
 
 
@@ -53,17 +59,25 @@ async def research(
     runs_dir: str = "runs",
     title: str = "Research Report",
     pipeline: Pipeline | None = None,
+    progress: ProgressFn | None = None,
 ) -> str:
     """Run the pipeline and return the rendered report (testable core)."""
     store = ProvenanceStore(run_id, base_dir=runs_dir)
-    result = await run_research(request, store=store, pipeline=pipeline, title=title)
+    result = await run_research(
+        request, store=store, pipeline=pipeline, title=title, progress=progress
+    )
     return result.report
+
+
+def _stderr_progress(message: str) -> None:
+    print(f"» {message}", file=sys.stderr, flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint. Returns a process exit code."""
     load_dotenv()  # pick up ANTHROPIC_API_KEY from .env if present
     args = build_parser().parse_args(argv)
+    progress = None if args.quiet else _stderr_progress
 
     try:
         report = anyio.run(
@@ -73,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_id=args.run_id,
                 runs_dir=args.runs_dir,
                 title=args.title,
+                progress=progress,
             )
         )
     except Exception as exc:  # noqa: BLE001 - surface any pipeline failure cleanly

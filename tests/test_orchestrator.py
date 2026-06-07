@@ -92,6 +92,24 @@ async def test_happy_path_produces_cited_report(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_progress_callback_reports_each_stage(tmp_path: Path) -> None:
+    messages: list[str] = []
+    await run_research(
+        "how big is X?",
+        store=_store(tmp_path),
+        pipeline=make_pipeline(),
+        progress=messages.append,
+    )
+
+    joined = " | ".join(messages)
+    assert "Classifying" in joined
+    assert "Collecting" in joined
+    assert "Synthesizing" in joined
+    assert "Verifying" in joined
+    assert "Rendering" in joined
+
+
+@pytest.mark.anyio
 async def test_failed_synthesis_blocks_report(tmp_path: Path) -> None:
     async def failed_synthesis(_findings: Sequence[Finding]) -> SynthesisResult:
         return SynthesisResult(status="error", error="synthesis stalled")
