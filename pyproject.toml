@@ -8,6 +8,7 @@ dependencies = [
     "claude-agent-sdk>=0.1.0",
     "anyio>=4.0",
     "typing-extensions>=4.10",
+    "python-dotenv>=1.2.2",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +18,9 @@ dev = [
     "mypy>=1.11",
     "pre-commit>=4.0",
 ]
+
+[project.scripts]
+research-agent = "research_agent.cli:main"
 
 [build-system]
 requires = ["hatchling"]
