@@ -94,3 +94,12 @@ def test_load_from_empty_store_returns_empty(tmp_path: Path) -> None:
     store = ProvenanceStore("fresh", base_dir=tmp_path)
     assert store.load_findings() == []
     assert store.load_claims() == []
+
+
+def test_save_report_writes_markdown(tmp_path: Path) -> None:
+    store = ProvenanceStore("run-1", base_dir=tmp_path)
+    path = store.save_report("# Report\nbody")
+
+    assert path == store.report_path
+    assert path.name == "report.md"
+    assert path.read_text() == "# Report\nbody"

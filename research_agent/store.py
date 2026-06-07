@@ -58,6 +58,17 @@ class ProvenanceStore:
     def checkpoint_path(self) -> Path:
         return self.run_dir / "checkpoint.json"
 
+    @property
+    def report_path(self) -> Path:
+        return self.run_dir / "report.md"
+
+    # --- report -------------------------------------------------------------
+
+    def save_report(self, markdown: str) -> Path:
+        """Write the rendered report alongside the provenance; return its path."""
+        self.report_path.write_text(markdown, encoding="utf-8")
+        return self.report_path
+
     # --- findings -----------------------------------------------------------
 
     def save_findings(self, findings: list[Finding]) -> None:

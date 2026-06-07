@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from claude_agent_sdk import query
 
@@ -87,6 +88,7 @@ class ResearchResult:
     findings: list[Finding]
     claims: list[Claim]
     verifications: list[VerificationResult]
+    report_path: Path | None = None  # where the report.md was written
     plan: Plan | None = None  # None for a resumed run (no fresh intake)
     revalidation: RevalidationResult | None = None
 
@@ -198,13 +200,16 @@ async def run_research(
     # [6] report renders verified claims only
     _emit(progress, "Rendering report…")
     report_md = render(verified, sources_from_findings(findings), title=title)
+    report_path = store.save_report(report_md)
     store.checkpoint()
+    _emit(progress, f"Report written to {report_path}")
 
     return ResearchResult(
         report=report_md,
         findings=findings,
         claims=verified,
         verifications=verifications,
+        report_path=report_path,
         plan=plan,
     )
 
@@ -262,6 +267,7 @@ async def resume_research(
     store.save_claims(verified)
 
     report_md = render(verified, sources_from_findings(reval.fresh_findings), title=title)
+    report_path = store.save_report(report_md)
     store.checkpoint()
 
     return ResearchResult(
@@ -269,5 +275,6 @@ async def resume_research(
         findings=reval.fresh_findings,
         claims=verified,
         verifications=verifications,
+        report_path=report_path,
         revalidation=reval,
     )

@@ -27,10 +27,14 @@ uv run research-agent "What are the main approaches to retrieval-augmented gener
 # or:  uv run python -m research_agent "..."
 ```
 
-Options: `--run-id` / `--runs-dir` (where the provenance store is written, default
-`runs/<run-id>/`) and `--title`. The cited markdown report prints to stdout; the
-structured `findings.jsonl` / `claims.jsonl` / `checkpoint.json` land under the
-run directory.
+The cited markdown report is written to a file — by default
+`runs/<run-id>/report.md`, alongside the structured `findings.jsonl` /
+`claims.jsonl` / `checkpoint.json`. Stage progress streams to stderr as it runs.
+
+Options:
+- `-o` / `--output PATH` — write the report to a specific path.
+- `--run-id` / `--runs-dir` — where the provenance store + report are written.
+- `--title` — report title. `-q` / `--quiet` — suppress progress output.
 
 ## CI & pre-commit
 

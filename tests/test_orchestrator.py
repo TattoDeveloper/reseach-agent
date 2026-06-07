@@ -95,6 +95,9 @@ async def test_happy_path_produces_cited_report(tmp_path: Path) -> None:
     # provenance persisted
     assert len(store.load_findings()) == 1
     assert len(store.load_claims()) == 1
+    # report written to disk as markdown
+    assert result.report_path is not None
+    assert result.report_path.read_text() == result.report
 
 
 @pytest.mark.anyio
