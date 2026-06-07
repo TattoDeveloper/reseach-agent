@@ -1,0 +1,26 @@
+# Local hooks run the same gate as CI, via uv. Install once with:
+#   uv run pre-commit install
+# Then every `git commit` runs ruff + mypy + the full test suite.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (lint)
+        entry: uv run ruff check
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: mypy
+        name: mypy (strict)
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: pytest
+        name: pytest
+        entry: uv run pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
