@@ -45,6 +45,10 @@ from research_agent.verifier import (
     verify_all,
 )
 
+# Called at each stage boundary with a human-readable status line. Optional so
+# the autonomous pipeline stays silent unless a caller (e.g. the CLI) opts in.
+ProgressFn = Callable[[str], None]
+
 ClassifyFn = Callable[[str], Awaitable[IntakeResult]]
 DiscoverFn = Callable[[str], Awaitable[list[str]]]
 CollectFn = Callable[[Sequence[SubQuestion]], Awaitable[list[CellResult]]]
@@ -90,6 +94,11 @@ def default_pipeline(query_fn: QueryFn = query) -> Pipeline:
     )
 
 
+def _emit(progress: ProgressFn | None, message: str) -> None:
+    if progress is not None:
+        progress(message)
+
+
 def _plan_to_subquestions(plan: Plan) -> list[SubQuestion]:
     """Comparative → one collector per matrix cell; otherwise one per question."""
     if "schema" in plan:
@@ -106,29 +115,41 @@ async def run_research(
     store: ProvenanceStore,
     pipeline: Pipeline | None = None,
     title: str = "Research Report",
+    progress: ProgressFn | None = None,
 ) -> ResearchResult:
     """Run the full pipeline, enforcing every gate in code (PLAN §9)."""
     pipeline = pipeline or default_pipeline()
 
     # [1] intake → [2] plan/discovery
+    _emit(progress, "Classifying request…")
     intake_result = await pipeline.classify(request)
+    _emit(progress, f"Request type: {intake_result.request_type}")
+
+    _emit(progress, "Discovering sub-questions…")
     sub_questions = await pipeline.discover(request)
     plan = build_plan(intake_result, sub_questions)
+    subqs = _plan_to_subquestions(plan)
 
     # [3] collect (parallel, scoped) → structured findings on disk
-    cells = await pipeline.collect(_plan_to_subquestions(plan))
+    _emit(progress, f"Collecting evidence ({len(subqs)} parallel task(s))…")
+    cells = await pipeline.collect(subqs)
     findings = [finding for cell in cells for finding in cell.findings]
     store.save_findings(findings)
+    _emit(progress, f"Collected {len(findings)} finding(s) from {len(cells)} task(s)")
 
     # [4] synthesize → cited claims
+    _emit(progress, "Synthesizing claims…")
     synthesis_result = await pipeline.synthesize(findings)
 
     # GATE: synthesis-before-report (raises SynthesisIncompleteError)
     assert_synthesis_complete(synthesis_result)
+    _emit(progress, f"Synthesized {len(synthesis_result.claims)} claim(s)")
 
     # [5] independent verification → keep only supported claims
+    _emit(progress, "Verifying claims independently…")
     verifications = await pipeline.verify(synthesis_result.claims, findings)
     verified = keep_supported(verifications)
+    _emit(progress, f"Verified {len(verified)}/{len(verifications)} claim(s) supported")
 
     # GATE: verify-before-report
     if not verified:
@@ -136,6 +157,7 @@ async def run_research(
     store.save_claims(verified)
 
     # [6] report renders verified claims only
+    _emit(progress, "Rendering report…")
     report_md = render(verified, sources_from_findings(findings), title=title)
     store.checkpoint()
 
@@ -154,6 +176,7 @@ async def resume_research(
     *,
     pipeline: Pipeline | None = None,
     title: str = "Research Report",
+    progress: ProgressFn | None = None,
 ) -> ResearchResult:
     """Continue a saved run, re-validating freshness FIRST (PLAN §7).
 
@@ -162,6 +185,7 @@ async def resume_research(
     proceeds through the same verify/report gates.
     """
     pipeline = pipeline or default_pipeline()
+    _emit(progress, "Loading saved run and re-validating freshness…")
     saved = store.load_findings()
 
     async def recollect(stale: Finding) -> list[Finding]:
@@ -182,12 +206,18 @@ async def resume_research(
         saved, source_of_record, recollect=recollect, resynthesize=resynthesize
     )
     store.save_findings(reval.fresh_findings)
+    _emit(
+        progress,
+        f"Re-collected {len(reval.stale_findings)} stale source(s); synthesis rebuilt",
+    )
 
     synthesis_result = reval.synthesis
     assert_synthesis_complete(synthesis_result)  # GATE
 
+    _emit(progress, "Verifying claims independently…")
     verifications = await pipeline.verify(synthesis_result.claims, reval.fresh_findings)
     verified = keep_supported(verifications)
+    _emit(progress, f"Verified {len(verified)}/{len(verifications)} claim(s) supported")
     if not verified:
         raise ReportBlockedError("report blocked: no claims survived verification")
     store.save_claims(verified)
