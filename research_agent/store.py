@@ -21,11 +21,21 @@ silently entering synthesis.
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from research_agent.types import Claim, Finding, validate_finding
+
+# doc_id -> current version of record (or None if unknown). Diffed against each
+# finding's captured `source.version` to detect staleness (PLAN §7).
+SourceOfRecord = Callable[[str], str | None]
+# Re-collect one superseded finding's document against the refreshed source.
+Recollect = Callable[[Finding], Awaitable[list[Finding]]]
+# Rebuild synthesis from the refreshed finding set (derived ⊄ outlive inputs).
+Resynthesize = Callable[[list[Finding]], Awaitable[Any]]
 
 
 class ProvenanceStore:
@@ -130,3 +140,64 @@ class ProvenanceStore:
         if not path.exists():
             return 0
         return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+# --- freshness re-validation on resume (PLAN §7) ----------------------------
+#
+# `research-stale-session-revalidation.md`: a saved session is FROZEN evidence,
+# not live evidence. Before continuing, diff each finding's captured version
+# against the source of record, re-collect only the superseded branch, and
+# REBUILD synthesis — never `resume` the contaminated transcript wholesale, since
+# stale tool-results would re-enter context as trusted evidence. This is only
+# possible because §3a captured `version`/`published` per finding.
+
+
+@dataclass
+class RevalidationResult:
+    """Outcome of a freshness re-validation: a clean, current evidence set."""
+
+    fresh_findings: list[Finding]
+    stale_findings: list[Finding]
+    synthesis: Any  # rebuilt from fresh_findings, not reused
+
+
+def find_stale(
+    findings: list[Finding], source_of_record: SourceOfRecord
+) -> list[Finding]:
+    """Findings whose captured version no longer matches the source of record."""
+    stale: list[Finding] = []
+    for finding in findings:
+        current = source_of_record(finding["source"]["doc_id"])
+        if current is not None and current != finding["source"]["version"]:
+            stale.append(finding)
+    return stale
+
+
+def partition_fresh_stale(
+    findings: list[Finding], source_of_record: SourceOfRecord
+) -> tuple[list[Finding], list[Finding]]:
+    """Split findings into (still-current, superseded), preserving order."""
+    stale = find_stale(findings, source_of_record)
+    fresh = [f for f in findings if f not in stale]
+    return fresh, stale
+
+
+async def revalidate(
+    findings: list[Finding],
+    source_of_record: SourceOfRecord,
+    *,
+    recollect: Recollect,
+    resynthesize: Resynthesize,
+) -> RevalidationResult:
+    """Re-validate freshness, re-collect the stale branch, REBUILD synthesis.
+
+    Keeps the still-current work, re-collects only what was superseded, then
+    rebuilds synthesis from the refreshed inputs — derived findings cannot
+    outlive the inputs they were derived from. The caller continues from this
+    clean result, never from the contaminated transcript.
+    """
+    fresh, stale = partition_fresh_stale(findings, source_of_record)
+    for finding in stale:
+        fresh.extend(await recollect(finding))
+    synthesis = await resynthesize(fresh)
+    return RevalidationResult(fresh_findings=fresh, stale_findings=stale, synthesis=synthesis)
