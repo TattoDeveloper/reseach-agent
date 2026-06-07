@@ -58,8 +58,14 @@ def make_pipeline(**overrides: object) -> Pipeline:
     async def discover(_topic: str) -> list[str]:
         return ["q1"]
 
-    async def collect(_subqs: Sequence[SubQuestion]) -> list[CellResult]:
-        return [CellResult("q0", [_finding("d1")])]
+    async def collect(
+        subqs: Sequence[SubQuestion], on_cell: object = None
+    ) -> list[CellResult]:
+        cells = [CellResult("q0", [_finding("d1")])]
+        if callable(on_cell):
+            for cell in cells:
+                on_cell(cell)
+        return cells
 
     async def synthesize(_findings: Sequence[Finding]) -> SynthesisResult:
         return SynthesisResult("ok", [Claim(text="X grew 40%", source_ids=["d1"], flags=[])])
@@ -107,6 +113,8 @@ async def test_progress_callback_reports_each_stage(tmp_path: Path) -> None:
     assert "Synthesizing" in joined
     assert "Verifying" in joined
     assert "Rendering" in joined
+    # per-task progress line for the single collector
+    assert any("[1/1]" in m for m in messages)
 
 
 @pytest.mark.anyio
@@ -133,7 +141,9 @@ async def test_uncited_claim_blocks_report(tmp_path: Path) -> None:
 async def test_unsupported_claim_excluded_from_report(tmp_path: Path) -> None:
     store = _store(tmp_path)
 
-    async def two_findings(_subqs: Sequence[SubQuestion]) -> list[CellResult]:
+    async def two_findings(
+        _subqs: Sequence[SubQuestion], _on_cell: object = None
+    ) -> list[CellResult]:
         return [CellResult("q0", [_finding("d1"), _finding("d2")])]
 
     async def two_claims(_findings: Sequence[Finding]) -> SynthesisResult:
@@ -192,7 +202,9 @@ async def test_comparative_request_fans_out_per_axis_value(tmp_path: Path) -> No
             dimensions={"jurisdictions": ["US"]},
         )
 
-    async def capturing_collect(subqs: Sequence[SubQuestion]) -> list[CellResult]:
+    async def capturing_collect(
+        subqs: Sequence[SubQuestion], _on_cell: object = None
+    ) -> list[CellResult]:
         captured["subqs"] = list(subqs)
         return [CellResult(s.id, [_finding("d1")]) for s in subqs]
 
@@ -213,7 +225,9 @@ async def test_resume_revalidates_stale_source_before_continuing(tmp_path: Path)
     record = {"d1": "v1", "d2": "v2"}  # d2 was revised → stale
     recollected: list[str] = []
 
-    async def recollect_collect(subqs: Sequence[SubQuestion]) -> list[CellResult]:
+    async def recollect_collect(
+        subqs: Sequence[SubQuestion], _on_cell: object = None
+    ) -> list[CellResult]:
         # the resume path re-collects exactly the stale doc
         results = []
         for s in subqs:

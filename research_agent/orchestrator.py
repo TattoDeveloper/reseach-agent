@@ -23,7 +23,13 @@ from dataclasses import dataclass
 
 from claude_agent_sdk import query
 
-from research_agent.collectors import CellResult, QueryFn, SubQuestion, collect_all
+from research_agent.collectors import (
+    CellProgressFn,
+    CellResult,
+    QueryFn,
+    SubQuestion,
+    collect_all,
+)
 from research_agent.intake import IntakeResult, classify
 from research_agent.planner import build_plan, discover, schema_to_subquestions
 from research_agent.report import render, sources_from_findings
@@ -51,7 +57,9 @@ ProgressFn = Callable[[str], None]
 
 ClassifyFn = Callable[[str], Awaitable[IntakeResult]]
 DiscoverFn = Callable[[str], Awaitable[list[str]]]
-CollectFn = Callable[[Sequence[SubQuestion]], Awaitable[list[CellResult]]]
+CollectFn = Callable[
+    [Sequence[SubQuestion], "CellProgressFn | None"], Awaitable[list[CellResult]]
+]
 SynthesizeFn = Callable[[Sequence[Finding]], Awaitable[SynthesisResult]]
 VerifyFn = Callable[[Sequence[Claim], Sequence[Finding]], Awaitable[list[VerificationResult]]]
 
@@ -85,10 +93,16 @@ class ResearchResult:
 
 def default_pipeline(query_fn: QueryFn = query) -> Pipeline:
     """Bind the real stage functions to a shared ``query`` implementation."""
+
+    async def collect(
+        subqs: Sequence[SubQuestion], on_cell: CellProgressFn | None = None
+    ) -> list[CellResult]:
+        return await collect_all(subqs, query_fn=query_fn, on_cell=on_cell)
+
     return Pipeline(
         classify=lambda request: classify(request, query_fn=query_fn),
         discover=lambda topic: discover(topic, query_fn=query_fn),
-        collect=lambda subqs: collect_all(subqs, query_fn=query_fn),
+        collect=collect,
         synthesize=lambda findings: synthesize(findings, query_fn=query_fn),
         verify=lambda claims, findings: verify_all(claims, findings, query_fn=query_fn),
     )
@@ -97,6 +111,26 @@ def default_pipeline(query_fn: QueryFn = query) -> Pipeline:
 def _emit(progress: ProgressFn | None, message: str) -> None:
     if progress is not None:
         progress(message)
+
+
+def _make_cell_progress(
+    progress: ProgressFn | None, total: int
+) -> CellProgressFn | None:
+    """A per-collector callback that emits 'N/total' lines as each finishes."""
+    if progress is None:
+        return None
+    done = 0
+
+    def on_cell(cell: CellResult) -> None:
+        nonlocal done
+        done += 1
+        if cell.error:
+            status = f"failed ({cell.error})"
+        else:
+            status = f"{len(cell.findings)} finding(s)"
+        _emit(progress, f"  [{done}/{total}] {cell.subquestion_id}: {status}")
+
+    return on_cell
 
 
 def _plan_to_subquestions(plan: Plan) -> list[SubQuestion]:
@@ -132,10 +166,15 @@ async def run_research(
 
     # [3] collect (parallel, scoped) → structured findings on disk
     _emit(progress, f"Collecting evidence ({len(subqs)} parallel task(s))…")
-    cells = await pipeline.collect(subqs)
+    cells = await pipeline.collect(subqs, _make_cell_progress(progress, len(subqs)))
     findings = [finding for cell in cells for finding in cell.findings]
+    failures = [cell for cell in cells if cell.error]
     store.save_findings(findings)
-    _emit(progress, f"Collected {len(findings)} finding(s) from {len(cells)} task(s)")
+    _emit(
+        progress,
+        f"Collected {len(findings)} finding(s) from {len(cells) - len(failures)} "
+        f"task(s); {len(failures)} failed",
+    )
 
     # [4] synthesize → cited claims
     _emit(progress, "Synthesizing claims…")
@@ -195,7 +234,7 @@ async def resume_research(
             prompt=f"Re-collect the current evidence for document {doc_id}.",
             subagent=f"recollect:{doc_id}",
         )
-        cells = await pipeline.collect([subq])
+        cells = await pipeline.collect([subq], None)
         return [finding for cell in cells for finding in cell.findings]
 
     async def resynthesize(fresh: Sequence[Finding]) -> SynthesisResult:

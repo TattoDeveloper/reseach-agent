@@ -73,6 +73,14 @@ def _stderr_progress(message: str) -> None:
     print(f"» {message}", file=sys.stderr, flush=True)
 
 
+def _format_error(exc: BaseException) -> str:
+    """Flatten an ExceptionGroup into readable leaf errors (Python 3.11+)."""
+    if isinstance(exc, BaseExceptionGroup):
+        inner = "; ".join(_format_error(e) for e in exc.exceptions)
+        return f"{type(exc).__name__}({inner})"
+    return f"{type(exc).__name__}: {exc}"
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint. Returns a process exit code."""
     load_dotenv()  # pick up ANTHROPIC_API_KEY from .env if present
@@ -91,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     except Exception as exc:  # noqa: BLE001 - surface any pipeline failure cleanly
-        print(f"research failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"research failed: {_format_error(exc)}", file=sys.stderr)
         return 1
 
     print(report)
