@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -49,6 +50,43 @@ def test_main_writes_report_file_and_returns_zero(
     assert code == 0
     assert out.read_text() == "# Done\nbody"
     assert "Report written to" in capsys.readouterr().err
+
+
+def test_trace_output_flag_writes_trace_to_custom_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_run_research(
+        request: str, *, tracer: Any = None, **_kwargs: object
+    ) -> ResearchResult:
+        # simulate a stage span so the trace isn't empty
+        if tracer is not None:
+            async with tracer.span("intake", "stage"):
+                pass
+        return ResearchResult(report="# R", findings=[], claims=[], verifications=[])
+
+    monkeypatch.setattr(cli, "run_research", fake_run_research)
+    trace_path = tmp_path / "custom" / "trace.json"
+
+    code = cli.main(
+        [
+            "a question",
+            "--runs-dir",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "r.md"),
+            "--trace-output",
+            str(trace_path),
+        ]
+    )
+
+    assert code == 0
+    assert trace_path.exists()  # written to the custom path (and --trace implied)
+    assert "intake" in trace_path.read_text()
+
+
+def test_parser_trace_output_implies_no_separate_flag_needed() -> None:
+    args = cli.build_parser().parse_args(["q", "--trace-output", "/tmp/t.json"])
+    assert args.trace_output == "/tmp/t.json"
 
 
 def test_main_reports_failure_and_returns_one(

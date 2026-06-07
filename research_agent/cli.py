@@ -64,6 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
         "also saved as <runs-dir>/<run-id>/trace.json",
     )
     parser.add_argument(
+        "--trace-output",
+        default=None,
+        help="path to write the trace JSON (default: <runs-dir>/<run-id>/trace.json); "
+        "implies --trace",
+    )
+    parser.add_argument(
         "-q",
         "--quiet",
         action="store_true",
@@ -111,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()  # pick up ANTHROPIC_API_KEY from .env if present
     args = build_parser().parse_args(argv)
     progress = None if args.quiet else _stderr_progress
-    tracer = Tracer() if args.trace else None
+    tracer = Tracer() if (args.trace or args.trace_output) else None
 
     try:
         result = anyio.run(
@@ -149,4 +155,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _write_trace(tracer: Tracer, args: argparse.Namespace) -> Path:
-    return tracer.save(Path(args.runs_dir) / args.run_id / "trace.json")
+    path = (
+        Path(args.trace_output)
+        if args.trace_output
+        else Path(args.runs_dir) / args.run_id / "trace.json"
+    )
+    return tracer.save(path)

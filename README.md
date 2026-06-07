@@ -35,6 +35,9 @@ Options:
 - `-o` / `--output PATH` — write the report to a specific path.
 - `--run-id` / `--runs-dir` — where the provenance store + report are written.
 - `--title` — report title. `-q` / `--quiet` — suppress progress output.
+- `--trace` — record a run/stage/llm/tool execution tree, print it, and save
+  `trace.json` under the run dir. `--trace-output PATH` writes it to a custom
+  path (and implies `--trace`).
 
 ## CI & pre-commit
 
