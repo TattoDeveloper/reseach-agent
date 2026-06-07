@@ -121,6 +121,25 @@ async def test_progress_callback_reports_each_stage(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_tracer_records_run_and_stage_spans(tmp_path: Path) -> None:
+    from research_agent.tracing import Tracer
+
+    tracer = Tracer()
+    await run_research(
+        "how big is X?", store=_store(tmp_path), pipeline=make_pipeline(), tracer=tracer
+    )
+
+    names = [s.name for s in tracer.spans]
+    assert "run_research" in names
+    for stage in ("intake", "discover", "collect", "synthesize", "verify"):
+        assert stage in names
+    # stages nest under the run span
+    run_span = next(s for s in tracer.spans if s.name == "run_research")
+    intake = next(s for s in tracer.spans if s.name == "intake")
+    assert intake.parent_id == run_span.id
+
+
+@pytest.mark.anyio
 async def test_failed_synthesis_blocks_report(tmp_path: Path) -> None:
     async def failed_synthesis(_findings: Sequence[Finding]) -> SynthesisResult:
         return SynthesisResult(status="error", error="synthesis stalled")

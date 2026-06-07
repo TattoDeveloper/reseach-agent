@@ -26,6 +26,7 @@ from research_agent.orchestrator import (
     run_research,
 )
 from research_agent.store import ProvenanceStore
+from research_agent.tracing import Tracer
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
         "(default: <runs-dir>/<run-id>/report.md)",
     )
     parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="record an execution trace (run/stage/llm/tool tree) and print it; "
+        "also saved as <runs-dir>/<run-id>/trace.json",
+    )
+    parser.add_argument(
         "-q",
         "--quiet",
         action="store_true",
@@ -73,11 +80,17 @@ async def research(
     title: str = "Research Report",
     pipeline: Pipeline | None = None,
     progress: ProgressFn | None = None,
+    tracer: Tracer | None = None,
 ) -> ResearchResult:
     """Run the pipeline and return the full result (testable core)."""
     store = ProvenanceStore(run_id, base_dir=runs_dir)
     return await run_research(
-        request, store=store, pipeline=pipeline, title=title, progress=progress
+        request,
+        store=store,
+        pipeline=pipeline,
+        title=title,
+        progress=progress,
+        tracer=tracer,
     )
 
 
@@ -98,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()  # pick up ANTHROPIC_API_KEY from .env if present
     args = build_parser().parse_args(argv)
     progress = None if args.quiet else _stderr_progress
+    tracer = Tracer() if args.trace else None
 
     try:
         result = anyio.run(
@@ -108,10 +122,13 @@ def main(argv: list[str] | None = None) -> int:
                 runs_dir=args.runs_dir,
                 title=args.title,
                 progress=progress,
+                tracer=tracer,
             )
         )
     except Exception as exc:  # noqa: BLE001 - surface any pipeline failure cleanly
         print(f"research failed: {_format_error(exc)}", file=sys.stderr)
+        if tracer is not None:
+            _write_trace(tracer, args)  # persist the partial trace for debugging
         return 1
 
     output = (
@@ -122,4 +139,14 @@ def main(argv: list[str] | None = None) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(result.report, encoding="utf-8")
     print(f"Report written to {output}", file=sys.stderr)
+
+    if tracer is not None:
+        trace_path = _write_trace(tracer, args)
+        print("\n--- trace ---", file=sys.stderr)
+        print(tracer.render(), file=sys.stderr)
+        print(f"Trace written to {trace_path}", file=sys.stderr)
     return 0
+
+
+def _write_trace(tracer: Tracer, args: argparse.Namespace) -> Path:
+    return tracer.save(Path(args.runs_dir) / args.run_id / "trace.json")

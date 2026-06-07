@@ -18,7 +18,8 @@ synthesis, an unsupported claim — and assert each gate fires.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +46,7 @@ from research_agent.synthesis import (
     assert_synthesis_complete,
     synthesize,
 )
+from research_agent.tracing import Span, Tracer, traced_query
 from research_agent.types import Claim, Finding, Plan
 from research_agent.verifier import (
     VerificationResult,
@@ -93,8 +95,14 @@ class ResearchResult:
     revalidation: RevalidationResult | None = None
 
 
-def default_pipeline(query_fn: QueryFn = query) -> Pipeline:
-    """Bind the real stage functions to a shared ``query`` implementation."""
+def default_pipeline(query_fn: QueryFn = query, *, tracer: Tracer | None = None) -> Pipeline:
+    """Bind the real stage functions to a shared ``query`` implementation.
+
+    When a tracer is supplied, every model call is wrapped so prompts, LLM
+    responses, and tool calls are recorded under the active stage span.
+    """
+    if tracer is not None:
+        query_fn = traced_query(tracer, query_fn)
 
     async def collect(
         subqs: Sequence[SubQuestion], on_cell: CellProgressFn | None = None
@@ -113,6 +121,18 @@ def default_pipeline(query_fn: QueryFn = query) -> Pipeline:
 def _emit(progress: ProgressFn | None, message: str) -> None:
     if progress is not None:
         progress(message)
+
+
+@asynccontextmanager
+async def _maybe_span(
+    tracer: Tracer | None, name: str, kind: str, *, inputs: object = None
+) -> AsyncIterator[Span | None]:
+    """Open a trace span if tracing is on; otherwise a no-op context."""
+    if tracer is None:
+        yield None
+    else:
+        async with tracer.span(name, kind, inputs=inputs) as span:
+            yield span
 
 
 def _make_cell_progress(
@@ -152,57 +172,65 @@ async def run_research(
     pipeline: Pipeline | None = None,
     title: str = "Research Report",
     progress: ProgressFn | None = None,
+    tracer: Tracer | None = None,
 ) -> ResearchResult:
     """Run the full pipeline, enforcing every gate in code (PLAN §9)."""
-    pipeline = pipeline or default_pipeline()
+    pipeline = pipeline or default_pipeline(tracer=tracer)
 
-    # [1] intake → [2] plan/discovery
-    _emit(progress, "Classifying request…")
-    intake_result = await pipeline.classify(request)
-    _emit(progress, f"Request type: {intake_result.request_type}")
+    async with _maybe_span(tracer, "run_research", "run", inputs={"request": request}):
+        # [1] intake → [2] plan/discovery
+        _emit(progress, "Classifying request…")
+        async with _maybe_span(tracer, "intake", "stage", inputs={"request": request}):
+            intake_result = await pipeline.classify(request)
+        _emit(progress, f"Request type: {intake_result.request_type}")
 
-    _emit(progress, "Discovering sub-questions…")
-    sub_questions = await pipeline.discover(request)
-    plan = build_plan(intake_result, sub_questions)
-    subqs = _plan_to_subquestions(plan)
+        _emit(progress, "Discovering sub-questions…")
+        async with _maybe_span(tracer, "discover", "stage", inputs={"request": request}):
+            sub_questions = await pipeline.discover(request)
+        plan = build_plan(intake_result, sub_questions)
+        subqs = _plan_to_subquestions(plan)
 
-    # [3] collect (parallel, scoped) → structured findings on disk
-    _emit(progress, f"Collecting evidence ({len(subqs)} parallel task(s))…")
-    cells = await pipeline.collect(subqs, _make_cell_progress(progress, len(subqs)))
-    findings = [finding for cell in cells for finding in cell.findings]
-    failures = [cell for cell in cells if cell.error]
-    store.save_findings(findings)
-    _emit(
-        progress,
-        f"Collected {len(findings)} finding(s) from {len(cells) - len(failures)} "
-        f"task(s); {len(failures)} failed",
-    )
+        # [3] collect (parallel, scoped) → structured findings on disk
+        _emit(progress, f"Collecting evidence ({len(subqs)} parallel task(s))…")
+        async with _maybe_span(tracer, "collect", "stage", inputs={"tasks": len(subqs)}):
+            cells = await pipeline.collect(subqs, _make_cell_progress(progress, len(subqs)))
+        findings = [finding for cell in cells for finding in cell.findings]
+        failures = [cell for cell in cells if cell.error]
+        store.save_findings(findings)
+        _emit(
+            progress,
+            f"Collected {len(findings)} finding(s) from {len(cells) - len(failures)} "
+            f"task(s); {len(failures)} failed",
+        )
 
-    # [4] synthesize → cited claims
-    _emit(progress, "Synthesizing claims…")
-    synthesis_result = await pipeline.synthesize(findings)
+        # [4] synthesize → cited claims
+        _emit(progress, "Synthesizing claims…")
+        async with _maybe_span(tracer, "synthesize", "stage", inputs={"findings": len(findings)}):
+            synthesis_result = await pipeline.synthesize(findings)
 
-    # GATE: synthesis-before-report (raises SynthesisIncompleteError)
-    assert_synthesis_complete(synthesis_result)
-    _emit(progress, f"Synthesized {len(synthesis_result.claims)} claim(s)")
+        # GATE: synthesis-before-report (raises SynthesisIncompleteError)
+        assert_synthesis_complete(synthesis_result)
+        _emit(progress, f"Synthesized {len(synthesis_result.claims)} claim(s)")
 
-    # [5] independent verification → keep only supported claims
-    _emit(progress, "Verifying claims independently…")
-    verifications = await pipeline.verify(synthesis_result.claims, findings)
-    verified = keep_supported(verifications)
-    _emit(progress, f"Verified {len(verified)}/{len(verifications)} claim(s) supported")
+        # [5] independent verification → keep only supported claims
+        _emit(progress, "Verifying claims independently…")
+        claim_count = len(synthesis_result.claims)
+        async with _maybe_span(tracer, "verify", "stage", inputs={"claims": claim_count}):
+            verifications = await pipeline.verify(synthesis_result.claims, findings)
+        verified = keep_supported(verifications)
+        _emit(progress, f"Verified {len(verified)}/{len(verifications)} claim(s) supported")
 
-    # GATE: verify-before-report
-    if not verified:
-        raise ReportBlockedError("report blocked: no claims survived verification")
-    store.save_claims(verified)
+        # GATE: verify-before-report
+        if not verified:
+            raise ReportBlockedError("report blocked: no claims survived verification")
+        store.save_claims(verified)
 
-    # [6] report renders verified claims only
-    _emit(progress, "Rendering report…")
-    report_md = render(verified, sources_from_findings(findings), title=title)
-    report_path = store.save_report(report_md)
-    store.checkpoint()
-    _emit(progress, f"Report written to {report_path}")
+        # [6] report renders verified claims only
+        _emit(progress, "Rendering report…")
+        report_md = render(verified, sources_from_findings(findings), title=title)
+        report_path = store.save_report(report_md)
+        store.checkpoint()
+        _emit(progress, f"Report written to {report_path}")
 
     return ResearchResult(
         report=report_md,
