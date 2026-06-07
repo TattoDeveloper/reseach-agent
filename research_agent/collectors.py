@@ -31,6 +31,7 @@ from typing import Any
 import anyio
 from claude_agent_sdk import ClaudeAgentOptions, query
 
+from research_agent.parsing import ParseError, extract_json_object, extract_text
 from research_agent.types import Finding, SchemaSpec, validate_finding
 
 # A `query`-compatible callable. Defaulting to the real SDK `query` while
@@ -148,11 +149,14 @@ async def collect_all(
 
 
 def _parse_cell(subq: SubQuestion, messages: list[Any]) -> CellResult:
-    text = _extract_text(messages)
+    text = extract_text(messages)
     if not text.strip():
         raise CollectionError(f"collector {subq.id!r} returned no content")
 
-    payload = _extract_json_object(text)
+    try:
+        payload = extract_json_object(text)
+    except ParseError as exc:
+        raise CollectionError(f"collector {subq.id!r}: {exc}") from exc
     if payload.get("no_rule_found") is True:
         return CellResult(subq.id, [], no_rule_found=True)
 
@@ -169,33 +173,3 @@ def _parse_cell(subq: SubQuestion, messages: list[Any]) -> CellResult:
             raw.setdefault("subagent", subq.subagent)
         findings.append(validate_finding(raw))
     return CellResult(subq.id, findings, no_rule_found=False)
-
-
-def _extract_text(messages: list[Any]) -> str:
-    """Concatenate every text block across messages (real or mocked)."""
-    parts: list[str] = []
-    for message in messages:
-        content = getattr(message, "content", None)
-        if not content:
-            continue
-        for block in content:
-            text = getattr(block, "text", None)
-            if isinstance(text, str):
-                parts.append(text)
-    return "".join(parts)
-
-
-def _extract_json_object(text: str) -> dict[str, Any]:
-    """Parse the JSON object a worker returned, tolerating surrounding prose."""
-    stripped = text.strip()
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start == -1 or end <= start:
-            raise CollectionError("collector did not return a JSON object") from None
-        parsed = json.loads(stripped[start : end + 1])
-    if not isinstance(parsed, dict):
-        raise CollectionError("collector JSON was not an object")
-    return parsed
