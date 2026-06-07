@@ -14,11 +14,17 @@ from __future__ import annotations
 import argparse
 import functools
 import sys
+from pathlib import Path
 
 import anyio
 from dotenv import load_dotenv
 
-from research_agent.orchestrator import Pipeline, ProgressFn, run_research
+from research_agent.orchestrator import (
+    Pipeline,
+    ProgressFn,
+    ResearchResult,
+    run_research,
+)
 from research_agent.store import ProvenanceStore
 
 
@@ -44,6 +50,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="title for the rendered report",
     )
     parser.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="path to write the markdown report "
+        "(default: <runs-dir>/<run-id>/report.md)",
+    )
+    parser.add_argument(
         "-q",
         "--quiet",
         action="store_true",
@@ -60,17 +73,24 @@ async def research(
     title: str = "Research Report",
     pipeline: Pipeline | None = None,
     progress: ProgressFn | None = None,
-) -> str:
-    """Run the pipeline and return the rendered report (testable core)."""
+) -> ResearchResult:
+    """Run the pipeline and return the full result (testable core)."""
     store = ProvenanceStore(run_id, base_dir=runs_dir)
-    result = await run_research(
+    return await run_research(
         request, store=store, pipeline=pipeline, title=title, progress=progress
     )
-    return result.report
 
 
 def _stderr_progress(message: str) -> None:
     print(f"» {message}", file=sys.stderr, flush=True)
+
+
+def _format_error(exc: BaseException) -> str:
+    """Flatten an ExceptionGroup into readable leaf errors (Python 3.11+)."""
+    if isinstance(exc, BaseExceptionGroup):
+        inner = "; ".join(_format_error(e) for e in exc.exceptions)
+        return f"{type(exc).__name__}({inner})"
+    return f"{type(exc).__name__}: {exc}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -80,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     progress = None if args.quiet else _stderr_progress
 
     try:
-        report = anyio.run(
+        result = anyio.run(
             functools.partial(
                 research,
                 args.request,
@@ -91,8 +111,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     except Exception as exc:  # noqa: BLE001 - surface any pipeline failure cleanly
-        print(f"research failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"research failed: {_format_error(exc)}", file=sys.stderr)
         return 1
 
-    print(report)
+    output = (
+        Path(args.output)
+        if args.output
+        else (result.report_path or Path(args.runs_dir) / args.run_id / "report.md")
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(result.report, encoding="utf-8")
+    print(f"Report written to {output}", file=sys.stderr)
     return 0

@@ -63,6 +63,11 @@ class CellResult:
     subquestion_id: str
     findings: list[Finding] = field(default_factory=list)
     no_rule_found: bool = False
+    error: str | None = None  # set when this collector failed (isolated, not fatal)
+
+
+# Called as each collector finishes, for per-task progress reporting.
+CellProgressFn = Callable[[CellResult], None]
 
 
 def default_collector_options() -> ClaudeAgentOptions:
@@ -123,20 +128,30 @@ async def collect_all(
     options: ClaudeAgentOptions | None = None,
     max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     query_fn: QueryFn = query,
+    on_cell: CellProgressFn | None = None,
 ) -> list[CellResult]:
     """Fan out collectors in parallel, bounded by a semaphore (PLAN §0.5).
 
     Results preserve input order, and every sub-question yields exactly one
-    `CellResult` — no cell is silently dropped.
+    `CellResult` — no cell is silently dropped. A single collector failing is
+    **isolated**: its cell records the error (``CellResult.error``) instead of
+    aborting the whole fan-out, so a broad run survives one bad task. `on_cell`
+    fires as each collector finishes, for per-task progress.
     """
     limiter = anyio.Semaphore(max_concurrency)
     results: list[CellResult | None] = [None] * len(subqs)
 
     async def _run(index: int, sub: SubQuestion) -> None:
         async with limiter:
-            results[index] = await collect_one(
-                sub, schema=schema, options=options, query_fn=query_fn
-            )
+            try:
+                result = await collect_one(
+                    sub, schema=schema, options=options, query_fn=query_fn
+                )
+            except Exception as exc:  # noqa: BLE001 - isolate one failing collector
+                result = CellResult(sub.id, [], error=str(exc))
+            results[index] = result
+            if on_cell is not None:
+                on_cell(result)
 
     async with anyio.create_task_group() as task_group:
         for index, sub in enumerate(subqs):

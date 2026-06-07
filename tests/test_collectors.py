@@ -126,6 +126,45 @@ async def test_collect_all_returns_one_result_per_subquestion() -> None:
 
 
 @pytest.mark.anyio
+async def test_collect_all_isolates_a_failing_collector() -> None:
+    # One collector raises; the fan-out must NOT abort — the cell records the error.
+    calls = 0
+
+    def flaky_query(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+        nonlocal calls
+        calls += 1
+        nth = calls
+
+        async def _gen() -> AsyncIterator[Any]:
+            if nth == 2:
+                raise RuntimeError("boom")
+            yield _json_message({"no_rule_found": True})
+
+        return _gen()
+
+    subqs = [_subq("q0"), _subq("q1"), _subq("q2")]
+    results = await collect_all(subqs, query_fn=flaky_query)
+
+    assert len(results) == 3  # no cell dropped, no ExceptionGroup raised
+    errored = [r for r in results if r.error]
+    assert len(errored) == 1
+    assert "boom" in (errored[0].error or "")
+
+
+@pytest.mark.anyio
+async def test_collect_all_reports_each_cell_via_on_cell() -> None:
+    seen: list[str] = []
+    subqs = [_subq("q0"), _subq("q1")]
+    msg = _json_message({"no_rule_found": True})
+
+    await collect_all(
+        subqs, query_fn=scripted_query([msg]), on_cell=lambda c: seen.append(c.subquestion_id)
+    )
+
+    assert len(seen) == 2
+
+
+@pytest.mark.anyio
 async def test_collect_all_caps_concurrency() -> None:
     active = 0
     peak = 0
