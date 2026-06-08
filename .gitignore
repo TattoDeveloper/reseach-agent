@@ -12,3 +12,7 @@ __pycache__/
 
 # Run artifacts (provenance store checkpoints live under runs/)
 runs/
+
+# Trace artifacts written via --trace-output to a custom path
+*trace*.json
+!tests/**/*.json
