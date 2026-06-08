@@ -9,7 +9,8 @@ Acceptance criteria from IMPLEMENTATION-PLAN.md:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -118,6 +119,29 @@ async def test_progress_callback_reports_each_stage(tmp_path: Path) -> None:
     assert "Rendering" in joined
     # per-task progress line for the single collector
     assert any("[1/1]" in m for m in messages)
+
+
+@pytest.mark.anyio
+async def test_error_aware_query_surfaces_real_result_text() -> None:
+    from research_agent.orchestrator import error_aware_query
+
+    @dataclass
+    class ResultMessage:
+        is_error: bool
+        result: str
+        subtype: str = "success"
+
+    def failing_query(*_a: object, **_k: object) -> AsyncIterator[object]:
+        async def _gen() -> AsyncIterator[object]:
+            yield ResultMessage(is_error=True, result="Credit balance is too low")
+            raise Exception("Claude Code returned an error result: success")
+
+        return _gen()
+
+    wrapped = error_aware_query(failing_query)
+    with pytest.raises(RuntimeError, match="Credit balance is too low"):
+        async for _ in wrapped(prompt="x"):
+            pass
 
 
 @pytest.mark.anyio

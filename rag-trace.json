@@ -1,0 +1,51 @@
+[
+  {
+    "name": "run_research",
+    "kind": "run",
+    "duration_ms": 1808.2709312438965,
+    "inputs": {
+      "request": "rag and kg"
+    },
+    "outputs": null,
+    "events": [],
+    "error": "Exception: Claude Code returned an error result: success",
+    "metadata": {},
+    "children": [
+      {
+        "name": "intake",
+        "kind": "stage",
+        "duration_ms": 1808.2311153411865,
+        "inputs": {
+          "request": "rag and kg"
+        },
+        "outputs": null,
+        "events": [],
+        "error": "Exception: Claude Code returned an error result: success",
+        "metadata": {},
+        "children": [
+          {
+            "name": "llm",
+            "kind": "llm",
+            "duration_ms": 1808.1998825073242,
+            "inputs": {
+              "prompt": "Classify this research request:\nrag and kg",
+              "system_prompt": "You classify a research request before work begins. Return JSON:\n{\"request_type\": \"simple|comparative|exploratory\", \"axis\": str|null, \"axis_values\": [str], \"dimensions\": {\"jurisdictions\": [str], \"date_range\": str}}.\n- 'comparative' when the user compares things across shared dimensions; set `axis` (what is compared) and `axis_values` (the things being compared), plus shared dimensions.\n- 'exploratory' for open-ended 'how does X work / landscape of X'.\n- 'simple' for a single factual question. Leave axis null otherwise."
+            },
+            "outputs": null,
+            "events": [
+              {
+                "type": "text",
+                "text": "Credit balance is too low"
+              }
+            ],
+            "error": "Exception: Claude Code returned an error result: success",
+            "metadata": {
+              "usage": "{'input_tokens': 0, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0, 'output_tokens': 0, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 0, 'ephemeral_5m_input_tokens': 0}, 'inference_geo': '', 'iterations': [], 'speed': 'standard'}"
+            },
+            "children": []
+          }
+        ]
+      }
+    ]
+  }
+]

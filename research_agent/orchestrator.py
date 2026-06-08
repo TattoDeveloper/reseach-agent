@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from claude_agent_sdk import query
 
@@ -95,12 +96,41 @@ class ResearchResult:
     revalidation: RevalidationResult | None = None
 
 
+def error_aware_query(query_fn: QueryFn) -> QueryFn:
+    """Surface the real CLI error text instead of the SDK's terse wrapper.
+
+    The SDK raises ``Claude Code returned an error result: <subtype>`` (e.g.
+    "success") when the CLI flags ``is_error`` — hiding the actual reason
+    ("Credit balance is too low", rate limits, etc.), which rides on the
+    `ResultMessage.result`. This captures that text and re-raises it clearly.
+    """
+
+    async def _wrapped(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        last_error: str | None = None
+        try:
+            async for message in query_fn(*args, **kwargs):
+                if type(message).__name__ == "ResultMessage" and getattr(
+                    message, "is_error", False
+                ):
+                    last_error = getattr(message, "result", None) or str(
+                        getattr(message, "subtype", "error")
+                    )
+                yield message
+        except Exception as exc:
+            if last_error:
+                raise RuntimeError(f"model call failed: {last_error}") from exc
+            raise
+
+    return _wrapped
+
+
 def default_pipeline(query_fn: QueryFn = query, *, tracer: Tracer | None = None) -> Pipeline:
     """Bind the real stage functions to a shared ``query`` implementation.
 
     When a tracer is supplied, every model call is wrapped so prompts, LLM
     responses, and tool calls are recorded under the active stage span.
     """
+    query_fn = error_aware_query(query_fn)
     if tracer is not None:
         query_fn = traced_query(tracer, query_fn)
 
